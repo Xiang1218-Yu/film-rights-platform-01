@@ -32,7 +32,9 @@ export const assets: Asset[] = [
   { id: 'AST-001', projectId: 'PRJ-001', name: '北境回声 S01E01 4K HDR Master', type: 'master', version: 7, status: 'review', owner: '后期制片', checksum: 'sha256:91b7…e2a1', territories: ['CN', 'HK', 'SG'], platforms: ['影院', 'StreamBox'], availableFrom: iso(-2), availableTo: iso(730), rightsTags: ['音乐-同步许可', '演员-全媒介'] },
   { id: 'AST-002', projectId: 'PRJ-001', name: '主预告 90s / Cut A', type: 'trailer', version: 4, status: 'approved', owner: '营销部', checksum: 'sha256:42ca…9b02', territories: ['CN'], platforms: ['StreamBox', '短视频'], availableFrom: iso(6), availableTo: iso(180), rightsTags: ['演员-宣传许可'] },
   { id: 'AST-003', projectId: 'PRJ-001', name: '片尾曲 / Winter Signal', type: 'audio', version: 2, status: 'locked', owner: '音乐版权', checksum: 'sha256:113c…78f0', territories: ['CN', 'US', 'CA'], platforms: ['影院', 'StreamBox'], availableFrom: iso(-40), availableTo: iso(52), rightsTags: ['音乐-同步许可'] },
-  { id: 'AST-004', projectId: 'PRJ-002', name: 'Orbit E02 Satellite Plates', type: 'master', version: 3, status: 'review', owner: '视觉总监', checksum: 'sha256:8a10…4a9d', territories: ['全球'], platforms: ['影院'], availableFrom: iso(18), availableTo: iso(365), rightsTags: ['航拍-编辑许可'] }
+  { id: 'AST-004', projectId: 'PRJ-002', name: 'Orbit E02 Satellite Plates', type: 'master', version: 3, status: 'review', owner: '视觉总监', checksum: 'sha256:8a10…4a9d', territories: ['全球'], platforms: ['影院'], availableFrom: iso(18), availableTo: iso(365), rightsTags: ['航拍-编辑许可'] },
+  { id: 'AST-005', projectId: 'PRJ-001', name: '北境回声 院线发行授权登记', type: 'master', version: 1, status: 'approved', owner: '发行部', checksum: 'sha256:7f21…c0de', territories: ['CN'], platforms: ['影院'], availableFrom: iso(-2), availableTo: iso(730), rightsTags: ['发行-窗口授权'] },
+  { id: 'AST-006', projectId: 'PRJ-001', name: '北境回声 短视频宣发授权登记', type: 'trailer', version: 1, status: 'approved', owner: '发行部', checksum: 'sha256:3d90…8b6a', territories: ['CN'], platforms: ['短视频'], availableFrom: iso(-2), availableTo: iso(730), rightsTags: ['发行-窗口授权'] }
 ];
 export const approvals: Approval[] = [
   { id: 'APR-01', projectId: 'PRJ-001', entityType: 'budget', entityId: 'BUD-001-V3', title: '后期超支预案 V3', requestedBy: '制片主任', status: 'pending', approver: '财务负责人', createdAt: iso(-1) },
@@ -52,16 +54,42 @@ export function projectSummary(projectId = projects[0].id) {
   return { project: projects.find(project => project.id === projectId), planned, forecast, actual, variance: forecast - planned, utilization: planned ? actual / planned : 0, committed: lines.reduce((sum, line) => sum + line.committed, 0), contractExposure: projectContracts.reduce((sum, contract) => sum + contract.ceiling, 0), assetCount: projectAssets.length, pendingApprovals: projectApprovals.filter(item => item.status === 'pending').length, highRiskLines: lines.filter(line => line.risk === 'high'), lines, contracts: projectContracts, assets: projectAssets, approvals: projectApprovals };
 }
 
-export function rightsConflicts(projectId = projects[0].id) {
-  const list = assets.filter(asset => asset.projectId === projectId);
-  const conflicts: { severity: 'critical' | 'warning'; assetA: string; assetB: string; reason: string }[] = [];
+export const GLOBAL_TERRITORY = '全球';
+export const GLOBAL_PLATFORM = '全平台';
+
+export interface RightsConflict { severity: 'critical' | 'warning'; assetA: string; assetB: string; reason: string; }
+
+function scopeOverlaps(a: string[], b: string[], globalMarker: string) {
+  return a.includes(globalMarker) || b.includes(globalMarker) || a.some(item => b.includes(item));
+}
+
+function sharedScope(a: string[], b: string[], globalMarker: string) {
+  if (a.includes(globalMarker)) return b;
+  if (b.includes(globalMarker)) return a;
+  return a.filter(item => b.includes(item));
+}
+
+export function detectRightsConflicts(list: Asset[]): RightsConflict[] {
+  const conflicts: RightsConflict[] = [];
   for (let i = 0; i < list.length; i += 1) for (let j = i + 1; j < list.length; j += 1) {
     const a = list[i], b = list[j];
-    const sameTag = a.rightsTags.some(tag => b.rightsTags.includes(tag));
-    const sameTerritory = a.territories.includes('全球') || b.territories.includes('全球') || a.territories.some(territory => b.territories.includes(territory));
-    if (sameTag && sameTerritory && a.availableTo >= b.availableFrom && b.availableTo >= a.availableFrom) conflicts.push({ severity: a.status === 'locked' || b.status === 'locked' ? 'critical' : 'warning', assetA: a.name, assetB: b.name, reason: `同一授权标签在重叠窗口内覆盖相同地域：${a.rightsTags.filter(tag => b.rightsTags.includes(tag)).join('、')}` });
+    const sharedTags = a.rightsTags.filter(tag => b.rightsTags.includes(tag));
+    const windowsOverlap = a.availableTo >= b.availableFrom && b.availableTo >= a.availableFrom;
+    if (
+      sharedTags.length > 0
+      && scopeOverlaps(a.territories, b.territories, GLOBAL_TERRITORY)
+      && scopeOverlaps(a.platforms, b.platforms, GLOBAL_PLATFORM)
+      && windowsOverlap
+    ) {
+      const sharedPlatforms = [...new Set(sharedScope(a.platforms, b.platforms, GLOBAL_PLATFORM))];
+      conflicts.push({ severity: a.status === 'locked' || b.status === 'locked' ? 'critical' : 'warning', assetA: a.name, assetB: b.name, reason: `同一授权标签在重叠窗口内覆盖相同地域与平台：${sharedTags.join('、')}（平台：${sharedPlatforms.join('、')}）` });
+    }
   }
   return conflicts;
+}
+
+export function rightsConflicts(projectId = projects[0].id): RightsConflict[] {
+  return detectRightsConflicts(assets.filter(asset => asset.projectId === projectId));
 }
 
 export function approve(id: string, status: ApprovalStatus, comment = '') {
