@@ -52,16 +52,25 @@ export function projectSummary(projectId = projects[0].id) {
   return { project: projects.find(project => project.id === projectId), planned, forecast, actual, variance: forecast - planned, utilization: planned ? actual / planned : 0, committed: lines.reduce((sum, line) => sum + line.committed, 0), contractExposure: projectContracts.reduce((sum, contract) => sum + contract.ceiling, 0), assetCount: projectAssets.length, pendingApprovals: projectApprovals.filter(item => item.status === 'pending').length, highRiskLines: lines.filter(line => line.risk === 'high'), lines, contracts: projectContracts, assets: projectAssets, approvals: projectApprovals };
 }
 
-export function rightsConflicts(projectId = projects[0].id) {
-  const list = assets.filter(asset => asset.projectId === projectId);
-  const conflicts: { severity: 'critical' | 'warning'; assetA: string; assetB: string; reason: string }[] = [];
+export interface RightsConflict { severity: 'critical' | 'warning'; assetA: string; assetB: string; reason: string }
+
+export function detectRightsConflicts(list: Asset[]): RightsConflict[] {
+  const conflicts: RightsConflict[] = [];
   for (let i = 0; i < list.length; i += 1) for (let j = i + 1; j < list.length; j += 1) {
     const a = list[i], b = list[j];
-    const sameTag = a.rightsTags.some(tag => b.rightsTags.includes(tag));
+    const sharedTags = a.rightsTags.filter(tag => b.rightsTags.includes(tag));
+    const sameTag = sharedTags.length > 0;
     const sameTerritory = a.territories.includes('全球') || b.territories.includes('全球') || a.territories.some(territory => b.territories.includes(territory));
-    if (sameTag && sameTerritory && a.availableTo >= b.availableFrom && b.availableTo >= a.availableFrom) conflicts.push({ severity: a.status === 'locked' || b.status === 'locked' ? 'critical' : 'warning', assetA: a.name, assetB: b.name, reason: `同一授权标签在重叠窗口内覆盖相同地域：${a.rightsTags.filter(tag => b.rightsTags.includes(tag)).join('、')}` });
+    const sharedPlatforms = a.platforms.filter(platform => b.platforms.includes(platform));
+    const samePlatform = sharedPlatforms.length > 0;
+    const windowOverlap = a.availableTo >= b.availableFrom && b.availableTo >= a.availableFrom;
+    if (sameTag && sameTerritory && samePlatform && windowOverlap) conflicts.push({ severity: a.status === 'locked' || b.status === 'locked' ? 'critical' : 'warning', assetA: a.name, assetB: b.name, reason: `同一授权标签在重叠窗口内覆盖相同地域与平台：${sharedTags.join('、')}（平台：${sharedPlatforms.join('、')}）` });
   }
   return conflicts;
+}
+
+export function rightsConflicts(projectId = projects[0].id) {
+  return detectRightsConflicts(assets.filter(asset => asset.projectId === projectId));
 }
 
 export function approve(id: string, status: ApprovalStatus, comment = '') {
